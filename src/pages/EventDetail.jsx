@@ -1,0 +1,230 @@
+import { useEffect, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
+import { configured, requireSupabase, supabase } from '../services/supabase'
+import EventFiles from '../components/EventFiles'
+export default function EventDetail() {
+  const { id } = useParams(),
+    [event, setEvent] = useState(null),
+    [fields, setFields] = useState([]),
+    [answers, setAnswers] = useState({}),
+    [comments, setComments] = useState([]),
+    [comment, setComment] = useState(''),
+    [msg, setMsg] = useState('')
+  useEffect(() => {
+    if (!configured) return
+    Promise.all([
+      supabase
+        .from('events')
+        .select('*, organizer:profiles!events_organizer_id_fkey(full_name)')
+        .eq('id', id)
+        .single(),
+      supabase
+        .from('event_registration_fields')
+        .select('*')
+        .eq('event_id', id)
+        .order('display_order'),
+      supabase
+        .from('event_discussions')
+        .select('*, profile:profiles!event_discussions_user_id_fkey(full_name)')
+        .eq('event_id', id)
+        .order('created_at', { ascending: false }),
+    ]).then(([a, b, c]) => {
+      setEvent(a.data)
+      setFields(b.data || [])
+      setComments(c.data || [])
+      setMsg(a.error?.message || '')
+    })
+  }, [id])
+  async function register(e) {
+    e.preventDefault()
+    try {
+      const db = requireSupabase()
+      const {
+        data: { user },
+      } = await db.auth.getUser()
+      if (!user) throw new Error('Please sign in before registering.')
+      const approval = event.registration_requires_approval ? 'pending' : 'approved'
+      const { data: r, error } = await db
+        .from('registrations')
+        .insert({
+          event_id: id,
+          participant_id: user.id,
+          approval_status: approval,
+          status: approval === 'approved' ? 'confirmed' : 'pending',
+          qr_pass_type: event.event_type === 'main_event' ? 'main_event_pass' : 'sub_event_pass',
+        })
+        .select()
+        .single()
+      if (error) throw error
+      if (fields.length) {
+        const { error: ae } = await db
+          .from('registration_answers')
+          .insert(
+            fields.map((f) => ({
+              registration_id: r.id,
+              field_id: f.id,
+              answer_text:
+                typeof answers[f.field_key] === 'boolean'
+                  ? String(answers[f.field_key])
+                  : answers[f.field_key] || '',
+            }))
+          )
+        if (ae) throw ae
+      }
+      setMsg(
+        approval === 'approved'
+          ? 'Registration successful. Your QR pass is now active.'
+          : 'Application sent. Your QR pass activates after approval.'
+      )
+    } catch (err) {
+      setMsg(err.message)
+    }
+  }
+  async function post(e) {
+    e.preventDefault()
+    try {
+      const db = requireSupabase()
+      const {
+        data: { user },
+      } = await db.auth.getUser()
+      if (!user) throw new Error('Sign in to join the discussion.')
+      const { error } = await db
+        .from('event_discussions')
+        .insert({ event_id: id, user_id: user.id, message: comment })
+      if (error) throw error
+      setComment('')
+      const { data } = await db
+        .from('event_discussions')
+        .select('*, profile:profiles!event_discussions_user_id_fkey(full_name)')
+        .eq('event_id', id)
+        .order('created_at', { ascending: false })
+      setComments(data || [])
+    } catch (err) {
+      setMsg(err.message)
+    }
+  }
+  if (!configured)
+    return (
+      <section className="empty">
+        <h1>Event details</h1>
+        <p>Connect Supabase to load events.</p>
+        <Link to="/events">Back to events</Link>
+      </section>
+    )
+  if (!event) return <p>Loading event...</p>
+  return (
+    <section>
+      <div className="detail">
+        <div>
+          <span className="pill">{event.category}</span>
+          <h1>{event.title}</h1>
+          <p className="lead">{event.description}</p>
+          <p>
+            <b>When:</b> {new Date(event.start_time).toLocaleString()} -{' '}
+            {new Date(event.end_time).toLocaleString()}
+          </p>
+          <p>
+            <b>Where:</b> {event.venue}
+          </p>
+          <p>
+            <b>Registration:</b>{' '}
+            {event.registration_deadline
+              ? `Closes ${new Date(event.registration_deadline).toLocaleString()}`
+              : 'Open'}
+          </p>
+          <p>
+            <b>Rules:</b> {event.rules || 'To be announced.'}
+          </p>
+        </div>
+        <aside>
+          <h2>Register</h2>
+          <form onSubmit={register}>
+            {fields.map((f) => (
+              <Field
+                key={f.id}
+                field={f}
+                value={answers[f.field_key]}
+                set={(v) => setAnswers({ ...answers, [f.field_key]: v })}
+              />
+            ))}
+            <button>Register now</button>
+          </form>
+        </aside>
+      </div>
+      <EventFiles event={event} />
+      <section className="discussion">
+        <h2>Discussion</h2>
+        <form onSubmit={post}>
+          <textarea
+            required
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="Ask the organizer a question..."
+          />
+          <button>Post comment</button>
+        </form>
+        {comments.map((c) => (
+          <article className="comment" key={c.id}>
+            <b>{c.profile?.full_name || 'Participant'}</b>
+            <small>{new Date(c.created_at).toLocaleString()}</small>
+            <p>{c.message}</p>
+          </article>
+        ))}
+      </section>
+      {msg && (
+        <p className={msg.includes('successful') || msg.includes('sent') ? 'notice' : 'error'}>
+          {msg}
+        </p>
+      )}
+    </section>
+  )
+}
+function Field({ field, value, set }) {
+  if (field.field_type === 'checkbox')
+    return (
+      <label className="check">
+        <input type="checkbox" checked={Boolean(value)} onChange={(e) => set(e.target.checked)} />
+        {field.label}
+        {field.is_required && ' *'}
+      </label>
+    )
+  if (['select', 'radio'].includes(field.field_type)) {
+    let opts = field.options || []
+    return (
+      <label>
+        {field.label}
+        {field.is_required && ' *'}
+        <select
+          required={field.is_required}
+          value={value || ''}
+          onChange={(e) => set(e.target.value)}
+        >
+          <option value="">Select one</option>
+          {opts.map((x) => (
+            <option key={x}>{x}</option>
+          ))}
+        </select>
+      </label>
+    )
+  }
+  return (
+    <label>
+      {field.label}
+      {field.is_required && ' *'}
+      {field.field_type === 'textarea' ? (
+        <textarea
+          required={field.is_required}
+          value={value || ''}
+          onChange={(e) => set(e.target.value)}
+        />
+      ) : (
+        <input
+          type={field.field_type === 'phone' ? 'tel' : field.field_type}
+          required={field.is_required}
+          value={value || ''}
+          onChange={(e) => set(e.target.value)}
+        />
+      )}
+    </label>
+  )
+}

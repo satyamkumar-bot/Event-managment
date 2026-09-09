@@ -1,0 +1,278 @@
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { requireSupabase } from '../services/supabase'
+const blank = { key: '', label: '', type: 'text', required: false, options: '' }
+const initial = {
+  title: '',
+  description: '',
+  type: 'sub_event',
+  parent: '',
+  category: 'Hackathon',
+  venue: '',
+  start: '',
+  end: '',
+  deadline: '',
+  capacity: '',
+  fee: '0',
+  rules: '',
+  approval: false,
+}
+export default function CreateEvent() {
+  const [form, setForm] = useState(initial),
+    [parents, setParents] = useState([]),
+    [profile, setProfile] = useState(null),
+    [fields, setFields] = useState([]),
+    [msg, setMsg] = useState(''),
+    [busy, setBusy] = useState(false),
+    nav = useNavigate()
+  useEffect(() => {
+    try {
+      const db = requireSupabase()
+      ;(async () => {
+        const {
+          data: { user },
+        } = await db.auth.getUser()
+        const { data: p } = await db.from('profiles').select('*').eq('id', user.id).single()
+        setProfile(p)
+        const { data } = await db
+          .from('events')
+          .select('id,title')
+          .eq('event_type', 'main_event')
+          .eq('college_id', p.college_id)
+          .order('title')
+        setParents(data || [])
+      })()
+    } catch (e) {
+      setMsg(e.message)
+    }
+  }, [])
+  const set = (k, v) => setForm({ ...form, [k]: v })
+  const updateField = (i, k, v) => setFields(fields.map((f, n) => (n === i ? { ...f, [k]: v } : f)))
+  async function submit(e) {
+    e.preventDefault()
+    setBusy(true)
+    setMsg('')
+    try {
+      const db = requireSupabase()
+      const {
+        data: { user },
+      } = await db.auth.getUser()
+      if (!user || !profile?.college_id)
+        throw new Error('Your account must be linked to a college before creating an event.')
+      const { data: event, error } = await db
+        .from('events')
+        .insert({
+          title: form.title,
+          description: form.description,
+          event_type: form.type,
+          parent_event_id: form.type === 'sub_event' ? form.parent || null : null,
+          college_id: profile.college_id,
+          category: form.category,
+          venue: form.venue,
+          start_time: form.start,
+          end_time: form.end,
+          registration_deadline: form.deadline || null,
+          max_participants: form.capacity ? Number(form.capacity) : null,
+          registration_fee: Number(form.fee || 0),
+          rules: form.rules,
+          registration_requires_approval: form.approval,
+          organizer_id: user.id,
+        })
+        .select()
+        .single()
+      if (error) throw error
+      const valid = fields.filter((f) => f.key.trim() && f.label.trim())
+      if (valid.length) {
+        const { error: fieldError } = await db.from('event_registration_fields').insert(
+          valid.map((f, i) => ({
+            event_id: event.id,
+            field_key: f.key
+              .trim()
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '_'),
+            label: f.label,
+            field_type: f.type,
+            is_required: f.required,
+            options: f.options ? f.options.split(',').map((x) => x.trim()) : [],
+            display_order: i,
+          }))
+        )
+        if (fieldError) throw fieldError
+      }
+      nav('/dashboard')
+    } catch (err) {
+      setMsg(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  const canCreateMain = ['college_admin', 'super_admin'].includes(profile?.role)
+  return (
+    <section>
+      <p className="eyebrow">ORGANIZER STUDIO</p>
+      <h1>Create an event</h1>
+      <p className="muted">
+        College admins create main fests. Assigned organizers and Core Team create sub-events under
+        those fests.
+      </p>
+      <form className="form-grid" onSubmit={submit}>
+        <label>
+          Event title
+          <input required value={form.title} onChange={(e) => set('title', e.target.value)} />
+        </label>
+        <label>
+          Event type
+          <select value={form.type} onChange={(e) => set('type', e.target.value)}>
+            <option value="sub_event">Sub-event</option>
+            {canCreateMain && <option value="main_event">Main fest / parent event</option>}
+          </select>
+        </label>
+        {form.type === 'sub_event' && (
+          <label>
+            Parent fest
+            <select value={form.parent} required onChange={(e) => set('parent', e.target.value)}>
+              <option value="">Choose a fest</option>
+              {parents.map((p) => (
+                <option value={p.id} key={p.id}>
+                  {p.title}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label>
+          Category
+          <input value={form.category} onChange={(e) => set('category', e.target.value)} />
+        </label>
+        <label>
+          Venue
+          <input required value={form.venue} onChange={(e) => set('venue', e.target.value)} />
+        </label>
+        <label>
+          Starts
+          <input
+            required
+            type="datetime-local"
+            value={form.start}
+            onChange={(e) => set('start', e.target.value)}
+          />
+        </label>
+        <label>
+          Ends
+          <input
+            required
+            type="datetime-local"
+            value={form.end}
+            onChange={(e) => set('end', e.target.value)}
+          />
+        </label>
+        <label>
+          Registration deadline
+          <input
+            type="datetime-local"
+            value={form.deadline}
+            onChange={(e) => set('deadline', e.target.value)}
+          />
+        </label>
+        <label>
+          Maximum participants
+          <input
+            min="1"
+            type="number"
+            value={form.capacity}
+            onChange={(e) => set('capacity', e.target.value)}
+          />
+        </label>
+        <label>
+          Fee
+          <input
+            min="0"
+            type="number"
+            value={form.fee}
+            onChange={(e) => set('fee', e.target.value)}
+          />
+        </label>
+        <label className="full">
+          Description
+          <textarea
+            required
+            value={form.description}
+            onChange={(e) => set('description', e.target.value)}
+          />
+        </label>
+        <label className="full">
+          Rules / eligibility
+          <textarea value={form.rules} onChange={(e) => set('rules', e.target.value)} />
+        </label>
+        <label className="check full">
+          <input
+            type="checkbox"
+            checked={form.approval}
+            onChange={(e) => set('approval', e.target.checked)}
+          />{' '}
+          Require organizer approval before activating QR passes
+        </label>
+        <div className="full custom">
+          <div className="section-title">
+            <h2>Custom registration fields</h2>
+            <button type="button" onClick={() => setFields([...fields, blank])}>
+              Add field
+            </button>
+          </div>
+          {fields.map((f, i) => (
+            <div className="field-row" key={i}>
+              <input
+                placeholder="Field key e.g. team_name"
+                value={f.key}
+                onChange={(e) => updateField(i, 'key', e.target.value)}
+              />
+              <input
+                placeholder="Label"
+                value={f.label}
+                onChange={(e) => updateField(i, 'label', e.target.value)}
+              />
+              <select value={f.type} onChange={(e) => updateField(i, 'type', e.target.value)}>
+                {[
+                  'text',
+                  'textarea',
+                  'number',
+                  'email',
+                  'phone',
+                  'url',
+                  'date',
+                  'select',
+                  'radio',
+                  'checkbox',
+                ].map((t) => (
+                  <option key={t}>{t}</option>
+                ))}
+              </select>
+              <input
+                placeholder="Options (comma separated)"
+                value={f.options}
+                onChange={(e) => updateField(i, 'options', e.target.value)}
+              />
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={f.required}
+                  onChange={(e) => updateField(i, 'required', e.target.checked)}
+                />
+                Required
+              </label>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => setFields(fields.filter((_, n) => n !== i))}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+        <button disabled={busy}>{busy ? 'Saving...' : 'Submit for approval'}</button>
+      </form>
+      {msg && <p className="error">{msg}</p>}
+    </section>
+  )
+}

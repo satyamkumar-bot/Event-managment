@@ -1,0 +1,62 @@
+import { useEffect, useState } from 'react'
+import QRCode from 'qrcode'
+import { configured, supabase } from '../services/supabase'
+export default function Passes() {
+  const [passes, setPasses] = useState([]),
+    [message, setMessage] = useState('')
+  useEffect(() => {
+    if (!configured) return
+    ;(async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+      if (!user) return
+      const { data, error } = await supabase
+        .from('registrations')
+        .select('*, event:events(title,venue,start_time,end_time)')
+        .eq('participant_id', user.id)
+        .order('registered_at', { ascending: false })
+      if (error) {
+        setMessage(error.message)
+        return
+      }
+      const result = await Promise.all(
+        (data || []).map(async (pass) => ({
+          ...pass,
+          qr: await QRCode.toDataURL(pass.qr_token, { width: 250, margin: 1 }),
+        }))
+      )
+      setPasses(result)
+    })()
+  }, [])
+  if (!configured)
+    return (
+      <section className="empty">
+        <h1>My passes</h1>
+        <p>Connect Supabase to view QR passes.</p>
+      </section>
+    )
+  return (
+    <section>
+      <p className="eyebrow">DIGITAL WALLET</p>
+      <h1>My passes</h1>
+      <div className="passes">
+        {passes.map((pass) => (
+          <article className="pass" key={pass.id}>
+            <span className="pill">{pass.qr_pass_type.replaceAll('_', ' ')}</span>
+            <h2>{pass.event?.title}</h2>
+            <p>{pass.event?.venue || 'Venue TBA'}</p>
+            <p>{pass.event?.start_time && new Date(pass.event.start_time).toLocaleString()}</p>
+            {pass.approval_status === 'approved' ? (
+              <img src={pass.qr} alt={`QR pass for ${pass.event?.title}`} />
+            ) : (
+              <p className="warning">This pass becomes active after approval.</p>
+            )}
+          </article>
+        ))}
+      </div>
+      {!passes.length && !message && <p className="muted">You have no passes yet.</p>}
+      {message && <p className="error">{message}</p>}
+    </section>
+  )
+}
